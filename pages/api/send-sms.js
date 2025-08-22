@@ -6,29 +6,34 @@ function toE164(raw) {
   return digits.startsWith('+') ? digits : `+1${digits}`;
 }
 
+function extractPayload(body) {
+  const b = body || {};
+  // Handle common wrappers Retell/other tools might use
+  return b.args || b.arguments || b.payload || b.data || b;
+}
+
 export default async function handler(req, res) {
   try {
-    // Only POST
     if (req.method !== 'POST') {
       res.setHeader('Allow', ['POST']);
       return res.status(405).end('Method Not Allowed');
     }
 
-    // Shared-secret auth
+    // Auth
     const authHeader = req.headers.authorization || '';
     const token = authHeader.replace(/^Bearer\s+/i, '');
     if (!token || token !== process.env.RETELL_FUNCTION_SECRET) {
       return res.status(401).json({ ok: false, error: 'Unauthorized' });
     }
 
-    // Env checks
+    // Env
     const {
       TWILIO_ACCOUNT_SID,
       TWILIO_AUTH_TOKEN,
       TWILIO_FROM_NUMBER,
       TWILIO_MESSAGING_SID,
+      STATUS_CALLBACK_URL,
     } = process.env;
-
     if (
       !TWILIO_ACCOUNT_SID ||
       !TWILIO_AUTH_TOKEN ||
@@ -41,21 +46,26 @@ export default async function handler(req, res) {
       });
     }
 
-    // Lazy-load Twilio (works great on Vercel/Node 22)
+    // Body (tolerant to wrappers)
+    const payload = extractPayload(req.body);
+    const { to, body, metadata = {} } = payload || {};
+    const toNumber = toE164(to);
+
+    if (!toNumber || !body) {
+      return res
+        .status(400)
+        .json({ ok: false, error: 'Missing to or body' });
+    }
+
+    // Lazy-load Twilio
     const twilioMod = await import('twilio');
     const twilio = twilioMod.default || twilioMod;
-
-    // Body
-    const { to, body, metadata = {} } = req.body || {};
-    const toNumber = toE164(to);
-    if (!toNumber || !body) {
-      return res.status(400).json({ ok: false, error: 'Missing to or body' });
-    }
 
     const client = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
     const args = { to: toNumber, body };
     if (TWILIO_MESSAGING_SID) args.messagingServiceSid = TWILIO_MESSAGING_SID;
     else args.from = TWILIO_FROM_NUMBER;
+    if (STATUS_CALLBACK_URL) args.statusCallback = STATUS_CALLBACK_URL;
 
     const message = await client.messages.create(args);
 
