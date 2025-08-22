@@ -6,22 +6,22 @@ function toE164(raw) {
   return digits.startsWith('+') ? digits : `+1${digits}`;
 }
 
-module.exports = async function handler(req, res) {
+export default async function handler(req, res) {
   try {
-    // Only allow POST
+    // Only POST
     if (req.method !== 'POST') {
       res.setHeader('Allow', ['POST']);
       return res.status(405).end('Method Not Allowed');
     }
 
-    // Auth: shared secret
+    // Shared-secret auth
     const authHeader = req.headers.authorization || '';
     const token = authHeader.replace(/^Bearer\s+/i, '');
     if (!token || token !== process.env.RETELL_FUNCTION_SECRET) {
       return res.status(401).json({ ok: false, error: 'Unauthorized' });
     }
 
-    // Validate env vars early (clear error instead of generic 500)
+    // Env checks
     const {
       TWILIO_ACCOUNT_SID,
       TWILIO_AUTH_TOKEN,
@@ -29,16 +29,21 @@ module.exports = async function handler(req, res) {
       TWILIO_MESSAGING_SID,
     } = process.env;
 
-    if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN ||
-        (!TWILIO_FROM_NUMBER && !TWILIO_MESSAGING_SID)) {
+    if (
+      !TWILIO_ACCOUNT_SID ||
+      !TWILIO_AUTH_TOKEN ||
+      (!TWILIO_FROM_NUMBER && !TWILIO_MESSAGING_SID)
+    ) {
       return res.status(500).json({
         ok: false,
-        error: 'Missing Twilio env vars (need ACCOUNT_SID, AUTH_TOKEN and FROM_NUMBER or MESSAGING_SID)'
+        error:
+          'Missing Twilio env vars (need ACCOUNT_SID, AUTH_TOKEN and FROM_NUMBER or MESSAGING_SID)',
       });
     }
 
-    // Lazy-load Twilio AFTER the checks to avoid module errors on GET
-    const twilio = require('twilio');
+    // Lazy-load Twilio (works great on Vercel/Node 22)
+    const twilioMod = await import('twilio');
+    const twilio = twilioMod.default || twilioMod;
 
     // Body
     const { to, body, metadata = {} } = req.body || {};
@@ -59,10 +64,11 @@ module.exports = async function handler(req, res) {
       sid: message.sid,
       to: toNumber,
       message_status: message.status || 'queued',
-      metadata
+      metadata,
     });
   } catch (e) {
-    // Echo the error message so we can see it in the response while debugging
-    return res.status(500).json({ ok: false, error: e?.message || 'Unknown error' });
+    return res
+      .status(500)
+      .json({ ok: false, error: e?.message || 'Unknown error' });
   }
-};
+}
